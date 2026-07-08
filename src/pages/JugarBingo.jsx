@@ -16,11 +16,34 @@ const MODOS_JUEGO = [
   "TABLA_LLENA",
 ];
 
+const JERARQUIA_AVISOS = ["LINEA", "CRUZ", "CUADRADO", "TABLA_LLENA"];
+
+const LABELS_MODO = {
+  LINEA: "LÍNEA",
+  CRUZ: "CRUZ",
+  CUADRADO: "CUADRADO",
+  TABLA_LLENA: "TABLA LLENA",
+};
+
+const obtenerEtiquetaModo = (modo) =>
+  LABELS_MODO[modo] || String(modo || "").replaceAll("_", " ");
+
+const obtenerModosPermitidosPorJerarquia = (modoActual) => {
+  const indice = JERARQUIA_AVISOS.indexOf(modoActual);
+
+  if (indice >= 0) {
+    return JERARQUIA_AVISOS.slice(indice);
+  }
+
+  return [modoActual];
+};
+
 export default function JugarBingo() {
   const [tablas, setTablas] = useState([]);
   const [bola, setBola] = useState("");
   const [bolasCantadas, setBolasCantadas] = useState([]);
   const [modoJuego, setModoJuego] = useState("LINEA");
+  const [premiosCerrados, setPremiosCerrados] = useState([]);
   const [mensaje, setMensaje] = useState("");
   const [error, setError] = useState("");
   const [nombreJuego, setNombreJuego] = useState("");
@@ -179,6 +202,7 @@ export default function JugarBingo() {
   useEffect(() => {
     setTablas([]);
     setJuegosSeleccionadosKeys([]);
+    setPremiosCerrados([]);
     setMensaje(
       "No hay tablas cargadas. Presiona “Recargar / elegir juego” y selecciona uno o varios juegos para iniciar."
     );
@@ -266,6 +290,7 @@ export default function JugarBingo() {
     const tablasSeleccionadas = juegos.flatMap((juego) => juego.tablas);
 
     setTablas(tablasSeleccionadas);
+    setPremiosCerrados([]);
     sincronizarDatosJuego(tablasSeleccionadas);
     setSelectorJuegosAbierto(false);
     setError("");
@@ -298,7 +323,28 @@ export default function JugarBingo() {
 
   const limpiarJuego = () => {
     setBolasCantadas([]);
-    setMensaje("Juego reiniciado.");
+    setPremiosCerrados([]);
+    setMensaje("Juego reiniciado. Los premios cerrados también se limpiaron.");
+    setError("");
+  };
+
+  const marcarAvisoComoEntregado = () => {
+    if (!modoAvisoActivo) return;
+
+    const etiqueta = obtenerEtiquetaModo(modoAvisoActivo);
+
+    setPremiosCerrados((prev) => {
+      if (prev.includes(modoAvisoActivo)) return prev;
+      return [...prev, modoAvisoActivo];
+    });
+
+    setMensaje(`${etiqueta} marcada como entregada. Ya no se mostrarán más avisos de ${etiqueta}; el sistema seguirá buscando el siguiente premio pendiente.`);
+    setError("");
+  };
+
+  const reabrirPremiosCerrados = () => {
+    setPremiosCerrados([]);
+    setMensaje("Premios cerrados limpiados. El sistema volverá a avisar desde la jerarquía seleccionada.");
     setError("");
   };
 
@@ -438,6 +484,7 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
       if (errorTablas) throw errorTablas;
 
       setBolasCantadas([]);
+      setPremiosCerrados([]);
       setTablas([]);
       setMensaje(
         `Tablas archivadas para ${descripcionArchivo}. Ahora puedes subir otro PDF o cargar otro juego.`
@@ -556,29 +603,36 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
     return null;
   };
 
-  const analizarTabla = (matriz) => {
+  const analizarModosPermitidos = (matriz, modosPermitidos) => {
     if (!matriz) return [];
 
-    const resultados = [];
-    const resultadoPrincipal = obtenerResultadoModo(matriz, modoJuego);
+    return modosPermitidos
+      .map((modo) => {
+        const resultado = obtenerResultadoModo(matriz, modo);
 
-    if (resultadoPrincipal) {
-      resultados.push(resultadoPrincipal);
+        if (!resultado) return null;
+
+        return {
+          modo,
+          label: LABELS_MODO[modo] || resultado,
+        };
+      })
+      .filter(Boolean);
+  };
+
+  const obtenerModoAvisoActivo = (tablasAnalizadas, modosPendientes) => {
+    // Se muestra el primer premio pendiente de la jerarquía.
+    // Ejemplo: si LÍNEA todavía no ha sido entregada, se avisa LÍNEA.
+    // Cuando el usuario marca LÍNEA como entregada, se pasa a CRUZ, luego CUADRADO y luego TABLA LLENA.
+    for (const modo of modosPendientes) {
+      const existeGanadora = tablasAnalizadas.some((tabla) =>
+        tabla.resultadosDetectados.some((resultado) => resultado.modo === modo)
+      );
+
+      if (existeGanadora) return modo;
     }
 
-    // Avisos cruzados: aunque se esté jugando otra modalidad,
-    // el sistema también avisa si aparece CRUZ o CUADRADO.
-    ["CRUZ", "CUADRADO"].forEach((modoExtra) => {
-      if (modoExtra === modoJuego) return;
-
-      const resultadoExtra = obtenerResultadoModo(matriz, modoExtra);
-
-      if (resultadoExtra) {
-        resultados.push(`AVISO: ${resultadoExtra}`);
-      }
-    });
-
-    return resultados;
+    return null;
   };
 
   const calcularProgresoTabla = (matriz) => {
@@ -608,16 +662,32 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
     };
   };
 
-  const tablasOrdenadas = useMemo(() => {
-    return tablas
+  const {
+    tablasOrdenadas,
+    modoAvisoActivo,
+    modosAvisoPermitidos,
+    modosAvisoPendientes,
+  } = useMemo(() => {
+    const modosPermitidos = obtenerModosPermitidosPorJerarquia(modoJuego);
+    const premiosCerradosSet = new Set(premiosCerrados);
+    const modosPendientes = modosPermitidos.filter(
+      (modo) => !premiosCerradosSet.has(modo)
+    );
+
+    const tablasAnalizadas = tablas
       .map((tabla, index) => {
         const progreso = calcularProgresoTabla(tabla.matriz);
+        const resultadosDetectados = analizarModosPermitidos(
+          tabla.matriz,
+          modosPendientes
+        );
 
         return {
           ...tabla,
           ordenOriginal: index,
           progreso,
-          resultados: analizarTabla(tabla.matriz),
+          resultadosDetectados,
+          resultados: [],
         };
       })
       .sort((a, b) => {
@@ -631,15 +701,134 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
 
         return a.ordenOriginal - b.ordenOriginal;
       });
-  }, [tablas, bolasCantadas, modoJuego]);
+
+    const modoActivo = obtenerModoAvisoActivo(tablasAnalizadas, modosPendientes);
+
+    const tablasConAvisos = tablasAnalizadas.map((tabla) => {
+      if (!modoActivo) {
+        return { ...tabla, resultados: [] };
+      }
+
+      const avisoActivo = tabla.resultadosDetectados.find(
+        (resultado) => resultado.modo === modoActivo
+      );
+
+      return {
+        ...tabla,
+        resultados: avisoActivo ? [avisoActivo.label] : [],
+      };
+    });
+
+    return {
+      tablasOrdenadas: tablasConAvisos,
+      modoAvisoActivo: modoActivo,
+      modosAvisoPermitidos: modosPermitidos,
+      modosAvisoPendientes: modosPendientes,
+    };
+  }, [tablas, bolasCantadas, modoJuego, premiosCerrados]);
 
   const ganadoras = tablasOrdenadas.filter(
     (tabla) => tabla.resultados.length > 0
   );
 
+  const etiquetaAvisoActivo = modoAvisoActivo
+    ? obtenerEtiquetaModo(modoAvisoActivo)
+    : null;
+
+  const textoJerarquiaAvisos = modosAvisoPermitidos
+    .map(obtenerEtiquetaModo)
+    .join(" → ");
+
+  const textoPremiosCerrados = premiosCerrados.length > 0
+    ? premiosCerrados.map(obtenerEtiquetaModo).join(" / ")
+    : "Ninguno";
+
+  const textoPremiosPendientes = modosAvisoPendientes.length > 0
+    ? modosAvisoPendientes.map(obtenerEtiquetaModo).join(" → ")
+    : "Ninguno";
+
   return (
-    <div style={styles.page}>
-      <div style={styles.card}>
+    <div style={styles.page} className="ringo-page-fullbleed">
+      <style>{`
+        html, body, #root {
+          width: 100% !important;
+          max-width: none !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          overflow-x: hidden;
+        }
+
+        .ringo-page-fullbleed {
+          width: 100vw !important;
+          max-width: none !important;
+          margin-left: calc(50% - 50vw) !important;
+          margin-right: calc(50% - 50vw) !important;
+        }
+
+        @media (max-width: 1420px) {
+          .ringo-tablas-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
+        }
+
+        @media (max-width: 1180px) {
+          .ringo-play-layout {
+            grid-template-columns: 1fr !important;
+          }
+
+          .ringo-bolas-sidebar,
+          .ringo-ganadoras-sidebar {
+            position: static !important;
+          }
+
+          .ringo-tablas-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
+        }
+
+        @media (max-width: 720px) {
+          .ringo-tablas-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+      `}</style>
+
+      <div style={styles.playLayout} className="ringo-play-layout">
+        <aside style={styles.bolasSidebar} className="ringo-bolas-sidebar">
+          <div style={styles.bolasBox}>
+            <h2 style={styles.bolasTitle}>Bolas cantadas</h2>
+            <p style={styles.helperText}>
+              Para corregir una bola mal digitada, presiona la bola que quieres borrar
+              o usa “Borrar última bola”.
+            </p>
+
+            <div style={styles.bolasCounter}>
+              Total cantadas: {bolasCantadas.length}
+            </div>
+
+            <div style={styles.bolasList}>
+              {bolasCantadas.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => eliminarBolaCantada(n)}
+                  title={`Eliminar bola ${n}`}
+                  style={styles.bolaItem}
+                >
+                  <span>{n}</span>
+                  <span style={styles.bolaDelete}>×</span>
+                </button>
+              ))}
+
+              {bolasCantadas.length === 0 && (
+                <div style={styles.bolasEmpty}>Todavía no hay bolas cantadas.</div>
+              )}
+            </div>
+          </div>
+        </aside>
+
+        <main style={styles.mainContent}>
+          <div style={styles.card}>
         <Link to="/" style={styles.backButton}>
           ← Volver al Home
         </Link>
@@ -648,8 +837,7 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
 
         <p style={styles.text}>
           Ingresa las bolas cantadas. El sistema marcará automáticamente las
-          tablas, revisará el modo seleccionado y también avisará si aparece
-          CRUZ o CUADRADO.
+          tablas y mostrará solo el aviso de mayor jerarquía según el modo seleccionado.
         </p>
 
         <div style={styles.gameBox}>
@@ -712,7 +900,10 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
 
           <select
             value={modoJuego}
-            onChange={(e) => setModoJuego(e.target.value)}
+            onChange={(e) => {
+              setModoJuego(e.target.value);
+              setPremiosCerrados([]);
+            }}
             style={styles.selectModo}
           >
             {MODOS_JUEGO.map((modo) => (
@@ -884,58 +1075,15 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
         {mensaje && <div style={styles.success}>{mensaje}</div>}
         {error && <div style={styles.error}>{error}</div>}
 
-        <div style={styles.bolasBox}>
-          <h2>Bolas cantadas</h2>
-          <p style={styles.helperText}>
-            Para corregir una bola mal digitada, presiona la bola que quieres borrar
-            o usa “Borrar última bola”.
-          </p>
-
-          <div style={styles.bolasList}>
-            {bolasCantadas.map((n) => (
-              <button
-                key={n}
-                type="button"
-                onClick={() => eliminarBolaCantada(n)}
-                title={`Eliminar bola ${n}`}
-                style={styles.bolaItem}
-              >
-                <span>{n}</span>
-                <span style={styles.bolaDelete}>×</span>
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
 
-      {ganadoras.length > 0 && (
-        <div style={styles.sectionWinner}>
-          <h2>Posibles ganadoras - {modoJuego.replaceAll("_", " ")}</h2>
-
-          {ganadoras.map((tabla) => (
-            <div key={tabla.id} style={styles.winnerCard}>
-              <strong>{tabla.resultados.join(" + ")}</strong>
-              <p>
-                Juego: {tabla.ringo_archivos?.nombre_juego || nombreJuego || "Sin nombre"}
-                {tabla.ringo_archivos?.fecha_juego
-                  ? ` | Fecha: ${tabla.ringo_archivos.fecha_juego}`
-                  : ""}
-              </p>
-              <p>
-                Tabla: {tabla.codigo_tabla || tabla.numero_tabla} | Archivo:{" "}
-                {tabla.ringo_archivos?.nombre_archivo || "Sin archivo"}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
 
       <div style={styles.section}>
         <h2>Tablas cargadas en juego ({tablas.length})</h2>
         <p style={styles.helperText}>
           Las tablas cargadas se ordenan automáticamente: primero aparecen las que
           tienen más bolas cantadas marcadas. En LINEA, la celda central no cuenta
-          para completar línea; para las demás modalidades sí se mantiene válida.
+          para completar línea. Los avisos se filtran por jerarquía: {textoJerarquiaAvisos}.
         </p>
 
         {tablas.length === 0 && (
@@ -945,7 +1093,7 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
           </div>
         )}
 
-        <div style={styles.grid}>
+        <div style={styles.grid} className="ringo-tablas-grid">
           {tablasOrdenadas.map((tabla, index) => {
             const resultados = tabla.resultados;
             const esGanadora = resultados.length > 0;
@@ -1007,6 +1155,71 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
           })}
         </div>
       </div>
+        </main>
+
+        <aside style={styles.ganadorasSidebar} className="ringo-ganadoras-sidebar">
+          <div style={styles.ganadorasBox}>
+            <h2 style={styles.ganadorasTitle}>Avisos ganadores</h2>
+            <div style={styles.ganadorasCounter}>
+              {ganadoras.length > 0
+                ? `${ganadoras.length} tabla(s) con ${etiquetaAvisoActivo}`
+                : "Sin avisos todavía"}
+            </div>
+
+            <p style={styles.helperText}>
+              Jerarquía activa: {textoJerarquiaAvisos}. Pendientes: {textoPremiosPendientes}. Cerrados: {textoPremiosCerrados}.
+              Primero se avisa el premio pendiente más bajo: si LÍNEA aún no ha salido, se muestra LÍNEA; cuando la marques como entregada, ya no aparecerán más líneas y seguirá CRUZ, CUADRADO y TABLA LLENA.
+            </p>
+
+            <div style={styles.ganadorasActions}>
+              <button
+                type="button"
+                onClick={marcarAvisoComoEntregado}
+                disabled={!modoAvisoActivo}
+                style={{
+                  ...styles.smallButton,
+                  width: "100%",
+                  opacity: modoAvisoActivo ? 1 : 0.5,
+                }}
+              >
+                {modoAvisoActivo
+                  ? `Marcar ${etiquetaAvisoActivo} como entregada`
+                  : "Sin premio para cerrar"}
+              </button>
+
+              {premiosCerrados.length > 0 && (
+                <button
+                  type="button"
+                  onClick={reabrirPremiosCerrados}
+                  style={{ ...styles.smallButtonDark, width: "100%" }}
+                >
+                  Reabrir premios cerrados
+                </button>
+              )}
+            </div>
+
+            <div style={styles.ganadorasList}>
+              {ganadoras.length > 0 ? (
+                ganadoras.map((tabla) => (
+                  <div key={tabla.id} style={styles.winnerCardCompact}>
+                    <strong>{tabla.resultados.join(" + ")}</strong>
+                    <span>Tabla: {tabla.codigo_tabla || tabla.numero_tabla}</span>
+                    <span>Juego: {tabla.ringo_archivos?.nombre_juego || nombreJuego || "Sin nombre"}</span>
+                    {tabla.ringo_archivos?.fecha_juego && (
+                      <span>Fecha: {tabla.ringo_archivos.fecha_juego}</span>
+                    )}
+                    <span>Archivo: {tabla.ringo_archivos?.nombre_archivo || "Sin archivo"}</span>
+                  </div>
+                ))
+              ) : (
+                <div style={styles.ganadorasEmpty}>
+                  Aún no hay avisos para la jerarquía seleccionada.
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
@@ -1023,14 +1236,47 @@ const baseButton = {
 const styles = {
   page: {
     minHeight: "100vh",
+    width: "100%",
+    boxSizing: "border-box",
     background:
-      "radial-gradient(circle at top, #250000 0%, #050505 45%, #000000 100%)",
+      "radial-gradient(circle at top left, rgba(127,29,29,0.70) 0%, rgba(37,0,0,0.92) 24%, #050505 52%, #000000 100%)",
     color: "white",
-    padding: 20,
+    padding: "10px 16px",
+    overflowX: "hidden",
+  },
+  playLayout: {
+    display: "grid",
+    gridTemplateColumns: "260px minmax(0, 1fr) 460px",
+    gap: 18,
+    alignItems: "start",
+    width: "100%",
+    maxWidth: "none",
+    margin: "0",
+    boxSizing: "border-box",
+  },
+  bolasSidebar: {
+    position: "sticky",
+    top: 20,
+    alignSelf: "start",
+    zIndex: 5,
+  },
+  ganadorasSidebar: {
+    position: "sticky",
+    top: 20,
+    alignSelf: "start",
+    zIndex: 5,
+    minWidth: 0,
+  },
+  mainContent: {
+    minWidth: 0,
+    width: "100%",
+    boxSizing: "border-box",
   },
   card: {
-    maxWidth: 980,
+    width: "100%",
+    maxWidth: "100%",
     margin: "0 auto",
+    boxSizing: "border-box",
     background:
       "linear-gradient(145deg, rgba(20,20,20,0.98), rgba(5,5,5,0.98))",
     border: "1px solid #b91c1c",
@@ -1269,12 +1515,46 @@ const styles = {
     border: "1px solid #dc2626",
   },
   bolasBox: {
-    marginTop: 24,
+    background:
+      "linear-gradient(145deg, rgba(20,20,20,0.98), rgba(5,5,5,0.98))",
+    border: "1px solid #b91c1c",
+    borderRadius: 24,
+    padding: 18,
+    boxShadow: "0 0 28px rgba(220,38,38,0.18)",
+    maxHeight: "calc(100vh - 40px)",
+    overflowY: "auto",
+  },
+  bolasTitle: {
+    margin: 0,
+    color: "#facc15",
+    fontSize: 24,
+    textShadow: "2px 2px 0 #7f1d1d",
+  },
+  bolasCounter: {
+    marginTop: 12,
+    marginBottom: 12,
+    padding: "9px 10px",
+    borderRadius: 12,
+    background: "rgba(250, 204, 21, 0.12)",
+    border: "1px solid rgba(250, 204, 21, 0.38)",
+    color: "#facc15",
+    fontWeight: 900,
+    fontSize: 13,
+    textAlign: "center",
   },
   bolasList: {
-    display: "flex",
-    flexWrap: "wrap",
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(46px, 1fr))",
     gap: 8,
+  },
+  bolasEmpty: {
+    gridColumn: "1 / -1",
+    padding: 12,
+    borderRadius: 12,
+    border: "1px dashed #7f1d1d",
+    color: "#fed7aa",
+    fontSize: 13,
+    textAlign: "center",
   },
   bolaItem: {
     width: 46,
@@ -1312,8 +1592,10 @@ const styles = {
     border: "1px solid #fecaca",
   },
   section: {
-    maxWidth: 1180,
+    width: "100%",
+    maxWidth: "100%",
     margin: "36px auto 0",
+    boxSizing: "border-box",
     background:
       "linear-gradient(145deg, rgba(20,20,20,0.98), rgba(5,5,5,0.98))",
     border: "1px solid #b91c1c",
@@ -1322,13 +1604,74 @@ const styles = {
     boxShadow: "0 0 28px rgba(220,38,38,0.18)",
   },
   sectionWinner: {
-    maxWidth: 1180,
+    width: "100%",
+    maxWidth: "100%",
     margin: "36px auto 0",
+    boxSizing: "border-box",
     background: "linear-gradient(135deg, #7f1d1d, #111)",
     border: "2px solid #facc15",
     borderRadius: 24,
     padding: 22,
     boxShadow: "0 0 32px rgba(250,204,21,0.35)",
+  },
+  ganadorasBox: {
+    background: "linear-gradient(145deg, rgba(20,20,20,0.98), rgba(5,5,5,0.98))",
+    border: "2px solid #facc15",
+    borderRadius: 24,
+    padding: 20,
+    boxShadow: "0 0 30px rgba(250,204,21,0.28)",
+    maxHeight: "calc(100vh - 40px)",
+    overflowY: "auto",
+  },
+  ganadorasTitle: {
+    margin: 0,
+    color: "#facc15",
+    fontSize: 25,
+    textAlign: "center",
+    textShadow: "2px 2px 0 #7f1d1d",
+  },
+  ganadorasCounter: {
+    marginTop: 12,
+    padding: "10px 12px",
+    borderRadius: 14,
+    background: "rgba(250, 204, 21, 0.13)",
+    border: "1px solid rgba(250, 204, 21, 0.45)",
+    color: "#facc15",
+    fontWeight: 900,
+    fontSize: 14,
+    textAlign: "center",
+  },
+  ganadorasActions: {
+    display: "grid",
+    gap: 8,
+    marginTop: 12,
+  },
+  ganadorasList: {
+    display: "grid",
+    gap: 10,
+    marginTop: 14,
+  },
+  winnerCardCompact: {
+    display: "grid",
+    gap: 5,
+    background: "#090909",
+    border: "1px solid #facc15",
+    borderRadius: 16,
+    padding: 14,
+    color: "#fef3c7",
+    fontSize: 14,
+    lineHeight: 1.25,
+    overflowWrap: "anywhere",
+  },
+  ganadorasEmpty: {
+    padding: 14,
+    borderRadius: 14,
+    border: "1px dashed #facc15",
+    background: "rgba(250, 204, 21, 0.08)",
+    color: "#fef3c7",
+    textAlign: "center",
+    fontSize: 13,
+    fontWeight: 800,
   },
   winnerCard: {
     background: "#090909",
@@ -1351,13 +1694,19 @@ const styles = {
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+    gridTemplateColumns: "repeat(3, minmax(300px, 1fr))",
     gap: 18,
+    width: "100%",
+    boxSizing: "border-box",
+    overflow: "visible",
   },
   tablaCard: {
     background: "#090909",
     borderRadius: 18,
     padding: 14,
+    boxSizing: "border-box",
+    minWidth: 0,
+    overflow: "hidden",
   },
   tablaHeader: {
     display: "flex",
@@ -1366,17 +1715,22 @@ const styles = {
     color: "#fef3c7",
     fontSize: 13,
     marginBottom: 10,
+    minWidth: 0,
+    overflowWrap: "anywhere",
   },
   progresoBadge: {
     display: "inline-flex",
     width: "fit-content",
+    maxWidth: "100%",
     background: "rgba(250, 204, 21, 0.12)",
     color: "#facc15",
     border: "1px solid rgba(250, 204, 21, 0.45)",
     borderRadius: 999,
     padding: "5px 9px",
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: 900,
+    whiteSpace: "normal",
+    lineHeight: 1.2,
   },
   badge: {
     background: "linear-gradient(135deg, #facc15, #ca8a04)",
@@ -1389,16 +1743,19 @@ const styles = {
   },
   matriz: {
     display: "grid",
-    gridTemplateColumns: "repeat(5, 1fr)",
+    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
     gap: 6,
+    width: "100%",
   },
   celda: {
-    height: 42,
+    height: 54,
     border: "1px solid #7f1d1d",
     borderRadius: 10,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     fontWeight: 900,
+    fontSize: 18,
+    minWidth: 0,
   },
 };

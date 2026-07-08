@@ -28,6 +28,8 @@ export default function SubirPDF() {
   const [file, setFile] = useState(null);
   const [archivoId, setArchivoId] = useState(null);
   const [codigoInicial, setCodigoInicial] = useState("");
+  const [archivosEnLote, setArchivosEnLote] = useState([]);
+  const [fileInputKey, setFileInputKey] = useState(0);
   const [nombreJuego, setNombreJuego] = useState("");
   const [fechaJuego, setFechaJuego] = useState(() =>
     new Date().toISOString().slice(0, 10)
@@ -46,12 +48,23 @@ export default function SubirPDF() {
 
   const limpiar = () => {
     setArchivoId(null);
+    setFile(null);
+    setCodigoInicial("");
+    setArchivosEnLote([]);
     setPages([]);
     setTablas([]);
     setTodasLasCeldas([]);
     setMatricesOCR([]);
     setMensaje("");
     setError("");
+    setFileInputKey((prev) => prev + 1);
+  };
+
+  const limpiarProcesamientoDelLote = () => {
+    setArchivoId(null);
+    setTablas([]);
+    setTodasLasCeldas([]);
+    setMatricesOCR([]);
   };
 
   const generarPreview = async (pdfFile) => {
@@ -78,7 +91,6 @@ export default function SubirPDF() {
       });
     }
 
-    setPages(result);
     return result;
   };
 
@@ -87,23 +99,86 @@ export default function SubirPDF() {
       setProcesando(true);
       setError("");
       setMensaje("");
-      setTablas([]);
-      setTodasLasCeldas([]);
-      setMatricesOCR([]);
 
       if (!file) {
         setError("Selecciona un archivo PDF.");
         return;
       }
 
-      await generarPreview(file);
-      setMensaje("PDF cargado correctamente.");
+      if (!codigoInicial) {
+        setError("Ingresa el código inicial que corresponde a este archivo.");
+        return;
+      }
+
+      const codigoBase = Number(codigoInicial);
+
+      if (!Number.isInteger(codigoBase)) {
+        setError("El código inicial debe ser numérico.");
+        return;
+      }
+
+      const preview = await generarPreview(file);
+      const loteId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const archivoNombre = file.name;
+      const fileOriginal = file;
+
+      const paginasDelArchivo = preview.map((page) => ({
+        ...page,
+        loteId,
+        archivoNombre,
+        codigoInicial: codigoBase,
+      }));
+
+      const nuevoArchivo = {
+        loteId,
+        file: fileOriginal,
+        nombre_archivo: archivoNombre,
+        codigoInicial: codigoBase,
+        total_paginas: preview.length,
+        total_tablas_estimadas: preview.length * 6,
+      };
+
+      setArchivosEnLote((prev) => [...prev, nuevoArchivo]);
+      setPages((prev) => {
+        const next = [...prev, ...paginasDelArchivo];
+        console.log("RINGO MULTI PDF V3 - páginas acumuladas", next.length, next.map((p) => p.archivoNombre));
+        return next;
+      });
+
+      // Si ya había recortes/OCR, se limpian para que al recortar nuevamente
+      // aparezcan todos los archivos del lote, incluyendo el nuevo.
+      limpiarProcesamientoDelLote();
+
+      setFile(null);
+      setCodigoInicial("");
+      setFileInputKey((prev) => prev + 1);
+      setMensaje(
+        `Archivo agregado al lote: ${archivoNombre}. Total acumulado: ${archivosEnLote.length + 1}. Selecciona otro PDF si deseas; NO se borró el anterior.`
+      );
     } catch (err) {
       console.error(err);
       setError(err.message || "Error al cargar el PDF.");
     } finally {
       setProcesando(false);
     }
+  };
+
+  const eliminarArchivoDelLote = (loteId) => {
+    const archivo = archivosEnLote.find((item) => item.loteId === loteId);
+
+    if (!archivo) return;
+
+    const confirmar = window.confirm(
+      `¿Eliminar este archivo del lote?\n\n${archivo.nombre_archivo}\n\nSi ya recortaste tablas u OCR, se limpiará ese avance para recalcular el lote.`
+    );
+
+    if (!confirmar) return;
+
+    setArchivosEnLote((prev) => prev.filter((item) => item.loteId !== loteId));
+    setPages((prev) => prev.filter((page) => page.loteId !== loteId));
+    limpiarProcesamientoDelLote();
+    setMensaje(`Archivo eliminado del lote: ${archivo.nombre_archivo}.`);
+    setError("");
   };
 
   const recortarImagen = async (src, coords) => {
@@ -144,12 +219,13 @@ export default function SubirPDF() {
       setTodasLasCeldas([]);
       setMatricesOCR([]);
 
-      if (!pages.length) {
-        setError("Primero sube el PDF.");
+      if (!pages.length || !archivosEnLote.length) {
+        setError("Primero agrega uno o varios PDFs al lote con el botón Subir PDF.");
         return;
       }
 
       const result = [];
+      const contadorPorArchivo = new Map();
 
       for (const page of pages) {
         let posicion = 1;
@@ -164,21 +240,29 @@ export default function SubirPDF() {
             };
 
             const image = await recortarImagen(page.image, coords);
+            const indiceEnArchivo = contadorPorArchivo.get(page.loteId) || 0;
+            const codigoEstimado = String(Number(page.codigoInicial) + indiceEnArchivo);
 
             result.push({
+              loteId: page.loteId,
+              archivoNombre: page.archivoNombre,
+              codigoInicial: page.codigoInicial,
+              indiceEnArchivo,
+              codigoEstimado,
               pagina: page.pageNumber,
               posicion,
               coords,
               image,
             });
 
+            contadorPorArchivo.set(page.loteId, indiceEnArchivo + 1);
             posicion++;
           }
         }
       }
 
       setTablas(result);
-      setMensaje(`Se recortaron ${result.length} tablas.`);
+      setMensaje(`Se recortaron ${result.length} tablas de ${archivosEnLote.length} archivo(s).`);
     } catch (err) {
       console.error(err);
       setError(err.message || "Error al recortar tablas.");
@@ -250,6 +334,11 @@ export default function SubirPDF() {
         const celdasTabla = await cortarCeldasDeTabla(tabla.image);
 
         resultado.push({
+          loteId: tabla.loteId,
+          archivoNombre: tabla.archivoNombre,
+          codigoInicial: tabla.codigoInicial,
+          indiceEnArchivo: tabla.indiceEnArchivo,
+          codigoEstimado: tabla.codigoEstimado,
           pagina: tabla.pagina,
           posicion: tabla.posicion,
           tablaImage: tabla.image,
@@ -383,17 +472,8 @@ export default function SubirPDF() {
         return;
       }
 
-      if (!codigoInicial) {
-        setError("Ingresa el código inicial de la primera tabla. Ejemplo: 5903.");
-        return;
-      }
-
-      const codigoBase = Number(codigoInicial);
-
-      if (!Number.isInteger(codigoBase)) {
-        setError("El código inicial debe ser numérico.");
-        return;
-      }
+      // Cada PDF del lote ya trae su propio código inicial.
+      // Por eso aquí no se pide un código global.
 
       const worker = await createWorker("eng");
 
@@ -410,9 +490,13 @@ export default function SubirPDF() {
 
         matrices.push({
           index: i,
+          loteId: tabla.loteId,
+          archivoNombre: tabla.archivoNombre,
+          codigoInicial: tabla.codigoInicial,
+          indiceEnArchivo: tabla.indiceEnArchivo,
           pagina: tabla.pagina,
           posicion: tabla.posicion,
-          codigo_tabla: String(codigoBase + i),
+          codigo_tabla: tabla.codigoEstimado || String(Number(tabla.codigoInicial) + tabla.indiceEnArchivo),
           matriz,
           detalle,
         });
@@ -494,13 +578,27 @@ export default function SubirPDF() {
     return errores;
   };
 
-  const asegurarArchivoEnBD = async () => {
-    if (archivoId) return archivoId;
+  const obtenerErroresRevisionTabla = (tabla) => {
+    const errores = [];
 
-    if (!file) {
-      throw new Error("No hay archivo PDF seleccionado.");
+    if (!tabla.codigo_tabla || String(tabla.codigo_tabla).trim() === "") {
+      errores.push("falta número real de tabla");
     }
 
+    const erroresMatriz = validarMatriz(tabla.matriz);
+
+    if (erroresMatriz.length > 0) {
+      errores.push(`celdas por revisar: ${erroresMatriz.join(", ")}`);
+    }
+
+    return errores;
+  };
+
+  const necesitaRevisionTabla = (tabla) => {
+    return obtenerErroresRevisionTabla(tabla).length > 0;
+  };
+
+  const obtenerUsuarioActual = async () => {
     const {
       data: { user },
       error: userError,
@@ -510,23 +608,23 @@ export default function SubirPDF() {
       throw new Error("Debes iniciar sesión para subir tablas.");
     }
 
-    const nombreLimpio = nombreJuego.trim();
+    return user;
+  };
 
-    if (!nombreLimpio) {
-      throw new Error("Ingresa el nombre del juego. Ejemplo: Papiringo o Ringo Quil.");
-    }
-
-    const cleanName = file.name
+  const limpiarNombreArchivo = (nombre) =>
+    nombre
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .replace(/\s+/g, "_")
       .replace(/[^a-zA-Z0-9._-]/g, "");
 
-    const storagePath = `${user.id}/${Date.now()}_${cleanName}`;
+  const crearArchivoEnBD = async ({ archivoLote, user, nombreLimpio, totalTablas }) => {
+    const cleanName = limpiarNombreArchivo(archivoLote.nombre_archivo);
+    const storagePath = `${user.id}/${Date.now()}_${archivoLote.loteId}_${cleanName}`;
 
     const { error: uploadError } = await supabase.storage
       .from("ringo-pdfs")
-      .upload(storagePath, file, {
+      .upload(storagePath, archivoLote.file, {
         contentType: "application/pdf",
         upsert: false,
       });
@@ -536,11 +634,11 @@ export default function SubirPDF() {
     const { data, error: insertError } = await supabase
       .from("ringo_archivos")
       .insert({
-        nombre_archivo: file.name,
+        nombre_archivo: archivoLote.nombre_archivo,
         storage_path: storagePath,
-        estado: "procesando",
-        total_paginas: pages.length,
-        total_tablas: matricesOCR.length,
+        estado: "procesado",
+        total_paginas: archivoLote.total_paginas,
+        total_tablas: totalTablas,
         nombre_juego: nombreLimpio,
         fecha_juego: fechaJuego || null,
         owner_id: user.id,
@@ -550,7 +648,6 @@ export default function SubirPDF() {
 
     if (insertError) throw insertError;
 
-    setArchivoId(data.id);
     return data.id;
   };
 
@@ -572,6 +669,11 @@ export default function SubirPDF() {
         return;
       }
 
+      if (!archivosEnLote.length) {
+        setError("Primero agrega uno o varios PDFs al lote.");
+        return;
+      }
+
       if (!matricesOCR.length) {
         setError("Primero ejecuta OCR.");
         return;
@@ -588,7 +690,7 @@ export default function SubirPDF() {
 
         if (faltantes.length > 0) {
           errores.push(
-            `Tabla ${tabla.index + 1} / Página ${tabla.pagina} Pos ${tabla.posicion}: ${faltantes.join(", ")}`
+            `Archivo ${tabla.archivoNombre || "sin archivo"} / Tabla ${tabla.index + 1} / Página ${tabla.pagina} Pos ${tabla.posicion}: ${faltantes.join(", ")}`
           );
         }
       });
@@ -598,17 +700,41 @@ export default function SubirPDF() {
         return;
       }
 
-      const idArchivo = await asegurarArchivoEnBD();
+      const user = await obtenerUsuarioActual();
+      const archivoIdPorLote = new Map();
+
+      for (const archivoLote of archivosEnLote) {
+        const totalTablasArchivo = matricesOCR.filter(
+          (tabla) => tabla.loteId === archivoLote.loteId
+        ).length;
+
+        if (totalTablasArchivo === 0) continue;
+
+        const idArchivo = await crearArchivoEnBD({
+          archivoLote,
+          user,
+          nombreLimpio,
+          totalTablas: totalTablasArchivo,
+        });
+
+        archivoIdPorLote.set(archivoLote.loteId, idArchivo);
+      }
 
       const registros = matricesOCR.map((tabla) => {
+        const archivoIdRelacionado = archivoIdPorLote.get(tabla.loteId);
+
+        if (!archivoIdRelacionado) {
+          throw new Error(`No se pudo asociar la tabla ${tabla.codigo_tabla} con su archivo PDF.`);
+        }
+
         const numeros = tabla.matriz
           .flat()
           .filter((n) => n !== "FREE")
           .map((n) => Number(n));
 
         return {
-          archivo_id: idArchivo,
-          numero_tabla: String(tabla.codigo_tabla).trim(),
+          archivo_id: archivoIdRelacionado,
+          numero_tabla: Number(String(tabla.codigo_tabla).trim()),
           codigo_tabla: String(tabla.codigo_tabla).trim(),
           pagina: tabla.pagina,
           posicion_en_pagina: tabla.posicion,
@@ -627,18 +753,9 @@ export default function SubirPDF() {
 
       if (upsertError) throw upsertError;
 
-      await supabase
-        .from("ringo_archivos")
-        .update({
-          estado: "procesado",
-          total_paginas: pages.length,
-          total_tablas: registros.length,
-          nombre_juego: nombreJuego.trim(),
-          fecha_juego: fechaJuego || null,
-        })
-        .eq("id", idArchivo);
-
-      setMensaje("DATOS GUARDADOS");
+      setMensaje(
+        `DATOS GUARDADOS: ${registros.length} tablas de ${archivoIdPorLote.size} archivo(s) para ${nombreLimpio}.`
+      );
     } catch (err) {
       console.error(err);
       setError(err.message || "Error guardando tablas en BD.");
@@ -696,28 +813,33 @@ export default function SubirPDF() {
     </div>
   );
 
+  const tablasQueNecesitanRevision = matricesOCR.filter(necesitaRevisionTabla);
+  const tablasCorrectasOCR = Math.max(matricesOCR.length - tablasQueNecesitanRevision.length, 0);
+
   return (
     <div style={styles.page}>
       <div style={styles.card}>
         <div style={styles.header}>
-          <Link to="/" style={styles.backButton}>
+          <Link to="/menu" style={styles.backButton}>
             ←
           </Link>
 
           <div>
-            <h1 style={styles.title}>RINGO - Lector de tablas</h1>
+            <h1 style={styles.title}>RINGO - Subir tablas MULTI PDF V4</h1>
             <p style={styles.text}>
-              Sube el PDF, asigna nombre de juego, recorta las tablas, ejecuta OCR, agrega el código inicial y guarda.
+              MODO MULTI PDF V4: puedes acumular varios PDFs. Después del OCR solo se muestran las tablas que necesitan revisión.
             </p>
           </div>
         </div>
 
         <input
+          key={fileInputKey}
           type="file"
           accept="application/pdf"
           onChange={(e) => {
-            limpiar();
             setFile(e.target.files?.[0] || null);
+            setError("");
+            setMensaje("");
           }}
           style={styles.fileInput}
         />
@@ -747,13 +869,13 @@ export default function SubirPDF() {
         <input
           value={codigoInicial}
           onChange={(e) => setCodigoInicial(e.target.value.replace(/[^0-9]/g, ""))}
-          placeholder="Código inicial de la primera tabla. Ej: 5903"
+          placeholder="Código inicial para ESTE archivo. Ej: 5903"
           style={styles.codigoInicialInput}
         />
 
         <div style={styles.actions}>
           <button onClick={subirPDF} disabled={!file || procesando} style={styles.primaryButton}>
-            1. Subir PDF
+            1. AGREGAR PDF AL LOTE
           </button>
 
           <button
@@ -761,7 +883,7 @@ export default function SubirPDF() {
             disabled={!pages.length || procesando}
             style={styles.successButton}
           >
-            2. Recortar tablas
+            2. Recortar TODAS las tablas del lote
           </button>
 
           <button
@@ -789,6 +911,46 @@ export default function SubirPDF() {
           </button>
         </div>
 
+        <div style={styles.debugBox}>
+          <strong>Diagnóstico MULTI PDF V4</strong>
+          <span>Archivo seleccionado: {file?.name || "ninguno"}</span>
+          <span>Archivos acumulados en lote: {archivosEnLote.length}</span>
+          <span>Páginas acumuladas: {pages.length}</span>
+          <span>Tablas recortadas: {tablas.length}</span>
+        </div>
+
+        {archivosEnLote.length > 0 && (
+          <div style={styles.loteBox}>
+            <div style={styles.loteHeader}>
+              <strong>Archivos agregados al lote: {archivosEnLote.length}</strong>
+              <button type="button" onClick={limpiar} style={styles.removeButton}>
+                Limpiar lote
+              </button>
+            </div>
+
+            <div style={styles.loteList}>
+              {archivosEnLote.map((archivo, index) => (
+                <div key={archivo.loteId} style={styles.loteItem}>
+                  <div>
+                    <strong>{index + 1}. {archivo.nombre_archivo}</strong>
+                    <div style={styles.loteMeta}>
+                      Código inicial: {archivo.codigoInicial} • Páginas: {archivo.total_paginas} • Tablas estimadas: {archivo.total_tablas_estimadas}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => eliminarArchivoDelLote(archivo.loteId)}
+                    style={styles.removeButton}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {mensaje && <div style={styles.success}>{mensaje}</div>}
         {error && <div style={styles.error}>{error}</div>}
       </div>
@@ -801,7 +963,7 @@ export default function SubirPDF() {
             {tablas.map((tabla, index) => (
               <div key={index} style={styles.tablaCard}>
                 <p style={styles.tablaLabel}>
-                  Tabla {index + 1} — Página {tabla.pagina} - Posición {tabla.posicion}
+                  {tabla.archivoNombre || "Archivo"} — Tabla {tabla.indiceEnArchivo + 1} — Código {tabla.codigoEstimado} — Página {tabla.pagina} - Posición {tabla.posicion}
                 </p>
 
                 <img src={tabla.image} alt={`Tabla ${index + 1}`} style={styles.tablaImage} />
@@ -818,7 +980,7 @@ export default function SubirPDF() {
           {todasLasCeldas.map((tabla, index) => (
             <div key={index} style={styles.allTableCard}>
               <h3>
-                Tabla {index + 1} — Página {tabla.pagina} - Posición {tabla.posicion}
+                {tabla.archivoNombre || "Archivo"} — Tabla {index + 1} — Código {tabla.codigoEstimado} — Página {tabla.pagina} - Posición {tabla.posicion}
               </h3>
 
               <div style={styles.celdasGrid}>
@@ -839,27 +1001,48 @@ export default function SubirPDF() {
 
       {matricesOCR.length > 0 && (
         <div style={styles.section}>
-          <h2>Cotejo visual + OCR editable</h2>
+          <h2>Revisión OCR</h2>
 
-          {matricesOCR.map((tabla) => (
-            <div key={tabla.index} style={styles.allTableCard}>
-              <h3>
-                Tabla {tabla.index + 1} — Página {tabla.pagina} - Posición {tabla.posicion}
-              </h3>
+          <div style={styles.revisionSummary}>
+            <strong>Resultado del OCR</strong>
+            <span>Total procesadas: {matricesOCR.length}</span>
+            <span>Correctas ocultas: {tablasCorrectasOCR}</span>
+            <span>Necesitan revisión: {tablasQueNecesitanRevision.length}</span>
+          </div>
 
-              <div style={styles.codigoBox}>
-                <label style={styles.codigoLabel}>Número real impreso de la tabla</label>
-                <input
-                  value={tabla.codigo_tabla || ""}
-                  onChange={(e) => actualizarCodigoTabla(tabla.index, e.target.value)}
-                  placeholder="Ej: 5903"
-                  style={styles.codigoInput}
-                />
-              </div>
-
-              {renderMatrizEditable(tabla)}
+          {tablasQueNecesitanRevision.length === 0 && (
+            <div style={styles.success}>
+              No hay tablas con celdas vacías o inválidas. Puedes presionar “Guardar en BD”.
             </div>
-          ))}
+          )}
+
+          {tablasQueNecesitanRevision.map((tabla) => {
+            const erroresRevision = obtenerErroresRevisionTabla(tabla);
+
+            return (
+              <div key={tabla.index} style={styles.allTableCard}>
+                <h3>
+                  {tabla.archivoNombre || "Archivo"} — Tabla {tabla.index + 1} — Página {tabla.pagina} - Posición {tabla.posicion}
+                </h3>
+
+                <div style={styles.revisionAlert}>
+                  <strong>Necesita revisión:</strong> {erroresRevision.join(" • ")}
+                </div>
+
+                <div style={styles.codigoBox}>
+                  <label style={styles.codigoLabel}>Número real impreso de la tabla</label>
+                  <input
+                    value={tabla.codigo_tabla || ""}
+                    onChange={(e) => actualizarCodigoTabla(tabla.index, e.target.value)}
+                    placeholder="Ej: 5903"
+                    style={styles.codigoInput}
+                  />
+                </div>
+
+                {renderMatrizEditable(tabla)}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -984,6 +1167,57 @@ const styles = {
     marginTop: 18,
   },
 
+  loteBox: {
+    marginTop: 18,
+    background: "#020617",
+    border: "1px solid #334155",
+    borderRadius: 16,
+    padding: 14,
+  },
+
+  loteHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    color: "#facc15",
+    marginBottom: 10,
+  },
+
+  loteList: {
+    display: "grid",
+    gap: 10,
+  },
+
+  loteItem: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    background: "#090909",
+    border: "1px solid #7f1d1d",
+    borderRadius: 12,
+    color: "#fef3c7",
+  },
+
+  loteMeta: {
+    marginTop: 4,
+    color: "#cbd5e1",
+    fontSize: 13,
+  },
+
+  removeButton: {
+    border: "1px solid #dc2626",
+    background: "#450a0a",
+    color: "#fecaca",
+    borderRadius: 10,
+    padding: "8px 10px",
+    cursor: "pointer",
+    fontWeight: 800,
+    whiteSpace: "nowrap",
+  },
+
   primaryButton: {
     ...baseButton,
     background: "linear-gradient(135deg, #dc2626, #7f1d1d)",
@@ -1028,6 +1262,30 @@ const styles = {
     borderRadius: 14,
     fontWeight: 700,
     border: "1px solid #dc2626",
+  },
+
+  revisionSummary: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 12,
+    alignItems: "center",
+    marginBottom: 18,
+    padding: 14,
+    borderRadius: 14,
+    background: "#111827",
+    border: "1px solid #facc15",
+    color: "#fef3c7",
+    fontWeight: 800,
+  },
+
+  revisionAlert: {
+    marginBottom: 14,
+    padding: 12,
+    borderRadius: 12,
+    background: "#450a0a",
+    border: "1px solid #dc2626",
+    color: "#fecaca",
+    fontWeight: 800,
   },
 
   section: {
