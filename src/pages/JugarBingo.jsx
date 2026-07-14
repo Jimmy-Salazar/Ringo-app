@@ -25,6 +25,14 @@ const LABELS_MODO = {
   TABLA_LLENA: "TABLA LLENA",
 };
 
+const COLUMNAS_BINGO = [
+  { letra: "B", min: 1, max: 15 },
+  { letra: "I", min: 16, max: 30 },
+  { letra: "N", min: 31, max: 45 },
+  { letra: "G", min: 46, max: 60 },
+  { letra: "O", min: 61, max: 75 },
+];
+
 const obtenerEtiquetaModo = (modo) =>
   LABELS_MODO[modo] || String(modo || "").replaceAll("_", " ");
 
@@ -57,6 +65,9 @@ export default function JugarBingo() {
   const [juegosSeleccionadosKeys, setJuegosSeleccionadosKeys] = useState([]);
   const [selectorJuegosAbierto, setSelectorJuegosAbierto] = useState(false);
   const [cargandoSelectorJuegos, setCargandoSelectorJuegos] = useState(false);
+  const [tablaEnRevision, setTablaEnRevision] = useState(null);
+  const [matrizRevision, setMatrizRevision] = useState(null);
+  const [guardandoRevision, setGuardandoRevision] = useState(false);
 
   const consultarTablasActivas = async () => {
     const { data, error } = await supabase
@@ -162,6 +173,238 @@ export default function JugarBingo() {
 
     if (grupos.length > 1) {
       setNombreJuego("Varios juegos seleccionados");
+    }
+  };
+
+  const clonarMatriz = (matriz) => {
+    if (!Array.isArray(matriz)) return [];
+    return matriz.map((fila) => (Array.isArray(fila) ? [...fila] : []));
+  };
+
+  const obtenerNumerosRepetidosMatriz = (matriz) => {
+    if (!Array.isArray(matriz)) return [];
+
+    const mapa = new Map();
+
+    matriz.forEach((fila, filaIndex) => {
+      if (!Array.isArray(fila)) return;
+
+      fila.forEach((valor, colIndex) => {
+        const texto = String(valor ?? "").trim().toUpperCase();
+
+        if (!texto || texto === "FREE") return;
+
+        const numero = Number(texto);
+
+        if (!Number.isInteger(numero) || numero < 1 || numero > 75) return;
+
+        if (!mapa.has(numero)) {
+          mapa.set(numero, []);
+        }
+
+        mapa.get(numero).push({ fila: filaIndex, columna: colIndex });
+      });
+    });
+
+    return Array.from(mapa.entries())
+      .filter(([, posiciones]) => posiciones.length > 1)
+      .map(([numero, posiciones]) => ({ numero, posiciones }));
+  };
+
+  const formatearNumerosRepetidos = (duplicados) => {
+    return duplicados
+      .map((item) => {
+        const posiciones = item.posiciones
+          .map((pos) => `F${pos.fila + 1} C${pos.columna + 1}`)
+          .join(", ");
+
+        return `${item.numero} (${posiciones})`;
+      })
+      .join(" • ");
+  };
+
+  const obtenerNumerosFueraDeColumnaMatriz = (matriz) => {
+    if (!Array.isArray(matriz)) return [];
+
+    const errores = [];
+
+    matriz.forEach((fila, filaIndex) => {
+      if (!Array.isArray(fila)) return;
+
+      fila.forEach((valor, colIndex) => {
+        const texto = String(valor ?? "").trim().toUpperCase();
+        const columna = COLUMNAS_BINGO[colIndex];
+
+        if (!columna || !texto || texto === "FREE") return;
+
+        const numero = Number(texto);
+
+        if (!Number.isInteger(numero) || numero < 1 || numero > 75) return;
+
+        if (numero < columna.min || numero > columna.max) {
+          errores.push({
+            numero,
+            fila: filaIndex,
+            columna: colIndex,
+            letra: columna.letra,
+            min: columna.min,
+            max: columna.max,
+          });
+        }
+      });
+    });
+
+    return errores;
+  };
+
+  const formatearErroresColumnas = (erroresColumnas) => {
+    return erroresColumnas
+      .map(
+        (item) =>
+          `${item.numero} en F${item.fila + 1} C${item.columna + 1} (${item.letra} debe ser ${item.min}-${item.max})`
+      )
+      .join(" • ");
+  };
+
+  const crearKeyCelda = (filaIndex, colIndex) => `${filaIndex}-${colIndex}`;
+
+  const obtenerNumerosValidosDeMatriz = (matriz) => {
+    return matriz
+      .flat()
+      .filter((valor) => String(valor ?? "").trim().toUpperCase() !== "FREE")
+      .map((valor) => Number(String(valor ?? "").trim()))
+      .filter((numero) => Number.isInteger(numero) && numero >= 1 && numero <= 75);
+  };
+
+  const validarMatrizRevision = (matriz) => {
+    const errores = [];
+
+    if (!Array.isArray(matriz) || matriz.length !== 5) {
+      errores.push("La matriz de la tabla no tiene 5 filas.");
+      return errores;
+    }
+
+    matriz.forEach((fila, filaIndex) => {
+      if (!Array.isArray(fila) || fila.length !== 5) {
+        errores.push(`Fila ${filaIndex + 1}: debe tener 5 columnas.`);
+        return;
+      }
+
+      fila.forEach((valor, colIndex) => {
+        const texto = String(valor ?? "").trim().toUpperCase();
+
+        if (filaIndex === 2 && colIndex === 2 && texto === "FREE") return;
+        if (texto === "FREE") return;
+
+        const numero = Number(texto);
+
+        if (!texto || !Number.isInteger(numero) || numero < 1 || numero > 75) {
+          errores.push(`F${filaIndex + 1} C${colIndex + 1}`);
+        }
+      });
+    });
+
+    return errores;
+  };
+
+  const obtenerNombreTablaRevision = (tabla) =>
+    tabla?.codigo_tabla || tabla?.numero_tabla || "Sin número";
+
+  const abrirRevisionTabla = (tabla) => {
+    setTablaEnRevision(tabla);
+    setMatrizRevision(clonarMatriz(tabla.matriz));
+    setError("");
+    setMensaje("");
+  };
+
+  const cerrarRevisionTabla = () => {
+    setTablaEnRevision(null);
+    setMatrizRevision(null);
+    setGuardandoRevision(false);
+  };
+
+  const actualizarCeldaRevision = (filaIndex, colIndex, valorNuevo) => {
+    setMatrizRevision((prev) => {
+      if (!Array.isArray(prev)) return prev;
+
+      const nuevaMatriz = clonarMatriz(prev);
+      const valorActual = String(nuevaMatriz[filaIndex]?.[colIndex] ?? "").trim().toUpperCase();
+
+      if (valorActual === "FREE") return prev;
+
+      const limpio = valorNuevo.replace(/[^0-9]/g, "");
+      nuevaMatriz[filaIndex][colIndex] = limpio === "" ? "" : Number(limpio);
+
+      return nuevaMatriz;
+    });
+  };
+
+  const guardarRevisionTabla = async () => {
+    if (!tablaEnRevision || !matrizRevision) return;
+
+    const erroresMatriz = validarMatrizRevision(matrizRevision);
+
+    if (erroresMatriz.length > 0) {
+      setError(`Corrige las celdas inválidas antes de guardar: ${erroresMatriz.join(", ")}`);
+      return;
+    }
+
+    const duplicados = obtenerNumerosRepetidosMatriz(matrizRevision);
+
+    if (duplicados.length > 0) {
+      setError(`Todavía hay números repetidos: ${formatearNumerosRepetidos(duplicados)}`);
+      return;
+    }
+
+    const erroresColumnas = obtenerNumerosFueraDeColumnaMatriz(matrizRevision);
+
+    if (erroresColumnas.length > 0) {
+      setError(`Todavía hay números fuera de su columna: ${formatearErroresColumnas(erroresColumnas)}`);
+      return;
+    }
+
+    try {
+      setGuardandoRevision(true);
+      setError("");
+      setMensaje("");
+
+      const numeros = obtenerNumerosValidosDeMatriz(matrizRevision);
+
+      const { error: updateError } = await supabase
+        .from("ringo_tablas")
+        .update({
+          matriz: matrizRevision,
+          numeros,
+        })
+        .eq("id", tablaEnRevision.id);
+
+      if (updateError) throw updateError;
+
+      const actualizarTabla = (tabla) =>
+        String(tabla.id) === String(tablaEnRevision.id)
+          ? {
+              ...tabla,
+              matriz: matrizRevision,
+              numeros,
+            }
+          : tabla;
+
+      setTablas((prev) => prev.map(actualizarTabla));
+      setTablasDisponibles((prev) => prev.map(actualizarTabla));
+      setJuegosDisponibles((prev) =>
+        prev.map((juego) => ({
+          ...juego,
+          tablas: juego.tablas.map(actualizarTabla),
+        }))
+      );
+
+      setMensaje(`Tabla ${obtenerNombreTablaRevision(tablaEnRevision)} actualizada correctamente.`);
+      cerrarRevisionTabla();
+    } catch (err) {
+      console.error(err);
+      setError(err.message || "Error guardando la corrección de la tabla.");
+    } finally {
+      setGuardandoRevision(false);
     }
   };
 
@@ -297,9 +540,17 @@ export default function JugarBingo() {
 
     const totalTablas = tablasSeleccionadas.length;
     const nombres = juegos.map((juego) => `${juego.nombre_juego} (${juego.fecha_juego})`);
+    const totalTablasParaRevisar = tablasSeleccionadas.filter((tabla) => {
+      const repetidos = obtenerNumerosRepetidosMatriz(tabla.matriz);
+      const columnasIncorrectas = obtenerNumerosFueraDeColumnaMatriz(tabla.matriz);
+      return repetidos.length > 0 || columnasIncorrectas.length > 0;
+    }).length;
+    const avisoRevision = totalTablasParaRevisar > 0
+      ? ` • ${totalTablasParaRevisar} tabla(s) tienen repetidos o números fuera de columna y necesitan revisión.`
+      : "";
 
     setMensaje(
-      `Se cargaron ${juegos.length} juego(s): ${nombres.join(", ")} • ${totalTablas} tablas.`
+      `Se cargaron ${juegos.length} juego(s): ${nombres.join(", ")} • ${totalTablas} tablas.${avisoRevision}`
     );
   };
 
@@ -731,6 +982,43 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
     (tabla) => tabla.resultados.length > 0
   );
 
+  const tablasConNumerosRepetidosCargadas = useMemo(() => {
+    return tablasOrdenadas
+      .map((tabla) => ({
+        ...tabla,
+        repetidosDetectados: obtenerNumerosRepetidosMatriz(tabla.matriz),
+        columnasInvalidasDetectadas: obtenerNumerosFueraDeColumnaMatriz(tabla.matriz),
+      }))
+      .filter(
+        (tabla) =>
+          tabla.repetidosDetectados.length > 0 ||
+          tabla.columnasInvalidasDetectadas.length > 0
+      );
+  }, [tablasOrdenadas]);
+
+  const repetidosRevision = useMemo(
+    () => obtenerNumerosRepetidosMatriz(matrizRevision),
+    [matrizRevision]
+  );
+
+  const numerosRepetidosRevision = useMemo(
+    () => new Set(repetidosRevision.map((item) => item.numero)),
+    [repetidosRevision]
+  );
+
+  const erroresColumnasRevision = useMemo(
+    () => obtenerNumerosFueraDeColumnaMatriz(matrizRevision),
+    [matrizRevision]
+  );
+
+  const celdasFueraDeColumnaRevision = useMemo(
+    () =>
+      new Set(
+        erroresColumnasRevision.map((item) => crearKeyCelda(item.fila, item.columna))
+      ),
+    [erroresColumnasRevision]
+  );
+
   const etiquetaAvisoActivo = modoAvisoActivo
     ? obtenerEtiquetaModo(modoAvisoActivo)
     : null;
@@ -1077,6 +1365,59 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
 
       </div>
 
+      {tablasConNumerosRepetidosCargadas.length > 0 && (
+        <div style={styles.duplicateReviewBox}>
+          <div style={styles.duplicateReviewHeader}>
+            <div>
+              <h2 style={styles.duplicateReviewTitle}>Tablas para revisar</h2>
+              <p style={styles.helperText}>
+                Estas tablas vienen de los juegos cargados y tienen números repetidos
+                o números ubicados fuera de su columna B-I-N-G-O. Puedes revisar solo esas tablas y guardar la corrección.
+              </p>
+            </div>
+
+            <div style={styles.duplicateReviewCounter}>
+              {tablasConNumerosRepetidosCargadas.length}
+            </div>
+          </div>
+
+          <div style={styles.duplicateReviewList}>
+            {tablasConNumerosRepetidosCargadas.map((tabla) => (
+              <div key={tabla.id} style={styles.duplicateReviewItem}>
+                <div style={styles.duplicateReviewInfo}>
+                  <strong>Tabla: {obtenerNombreTablaRevision(tabla)}</strong>
+                  <span>
+                    Juego: {tabla.ringo_archivos?.nombre_juego || nombreJuego || "Sin nombre"}
+                    {tabla.ringo_archivos?.fecha_juego
+                      ? ` | ${tabla.ringo_archivos.fecha_juego}`
+                      : ""}
+                  </span>
+                  <span>Archivo: {tabla.ringo_archivos?.nombre_archivo || "Sin archivo"}</span>
+                  {tabla.repetidosDetectados.length > 0 && (
+                    <span style={styles.duplicateText}>
+                      Repetidos: {formatearNumerosRepetidos(tabla.repetidosDetectados)}
+                    </span>
+                  )}
+
+                  {tabla.columnasInvalidasDetectadas.length > 0 && (
+                    <span style={styles.columnErrorText}>
+                      Fuera de columna: {formatearErroresColumnas(tabla.columnasInvalidasDetectadas)}
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => abrirRevisionTabla(tabla)}
+                  style={styles.smallButton}
+                >
+                  Revisar / editar
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div style={styles.section}>
         <h2>Tablas cargadas en juego ({tablas.length})</h2>
@@ -1220,6 +1561,119 @@ Luego ya no aparecerán en el juego actual, pero quedarán guardadas en la base 
           </div>
         </aside>
       </div>
+
+      {tablaEnRevision && matrizRevision && (
+        <div style={styles.revisionOverlay}>
+          <div style={styles.revisionModal}>
+            <div style={styles.revisionHeader}>
+              <div>
+                <h2 style={styles.revisionTitle}>
+                  Revisar tabla {obtenerNombreTablaRevision(tablaEnRevision)}
+                </h2>
+                <p style={styles.helperText}>
+                  Cambia únicamente las celdas con error. La tabla se actualiza en Supabase
+                  cuando presionas “Guardar corrección”.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={cerrarRevisionTabla}
+                style={styles.closeButton}
+              >
+                ×
+              </button>
+            </div>
+
+            {repetidosRevision.length > 0 && (
+              <div style={styles.revisionWarning}>
+                Repetidos actuales: {formatearNumerosRepetidos(repetidosRevision)}
+              </div>
+            )}
+
+            {erroresColumnasRevision.length > 0 && (
+              <div style={styles.revisionWarning}>
+                Fuera de columna: {formatearErroresColumnas(erroresColumnasRevision)}
+              </div>
+            )}
+
+            <div style={styles.revisionGrid}>
+              {matrizRevision.flatMap((fila, filaIndex) =>
+                fila.map((valor, colIndex) => {
+                  const texto = String(valor ?? "").trim().toUpperCase();
+                  const numero = Number(texto);
+                  const isFree = texto === "FREE";
+                  const isRepeated =
+                    !isFree && Number.isInteger(numero) && numerosRepetidosRevision.has(numero);
+                  const isOutOfColumn = celdasFueraDeColumnaRevision.has(
+                    crearKeyCelda(filaIndex, colIndex)
+                  );
+                  const columnaBingo = COLUMNAS_BINGO[colIndex];
+
+                  return (
+                    <div
+                      key={`${filaIndex}-${colIndex}`}
+                      style={{
+                        ...styles.revisionCell,
+                        border: isRepeated || isOutOfColumn
+                          ? "2px solid #facc15"
+                          : styles.revisionCell.border,
+                        background: isFree
+                          ? "#14532d"
+                          : isRepeated || isOutOfColumn
+                            ? "#713f12"
+                            : "#020617",
+                      }}
+                    >
+                      <span style={styles.revisionCellLabel}>
+                        {columnaBingo?.letra || `C${colIndex + 1}`} • F{filaIndex + 1}
+                      </span>
+
+                      {isFree ? (
+                        <strong style={styles.freeText}>FREE</strong>
+                      ) : (
+                        <input
+                          value={valor ?? ""}
+                          inputMode="numeric"
+                          onChange={(e) =>
+                            actualizarCeldaRevision(filaIndex, colIndex, e.target.value)
+                          }
+                          style={styles.revisionInput}
+                        />
+                      )}
+
+                      {isRepeated && <span style={styles.revisionDuplicateTag}>REPETIDO</span>}
+                      {isOutOfColumn && <span style={styles.revisionDuplicateTag}>COLUMNA</span>}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div style={styles.revisionActions}>
+              <button
+                type="button"
+                onClick={cerrarRevisionTabla}
+                style={styles.smallButtonDark}
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                onClick={guardarRevisionTabla}
+                disabled={guardandoRevision}
+                style={{
+                  ...styles.primaryButton,
+                  opacity: guardandoRevision ? 0.55 : 1,
+                }}
+              >
+                {guardandoRevision ? "Guardando..." : "Guardar corrección"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1672,6 +2126,158 @@ const styles = {
     textAlign: "center",
     fontSize: 13,
     fontWeight: 800,
+  },
+  duplicateReviewBox: {
+    width: "100%",
+    maxWidth: "100%",
+    margin: "22px auto 0",
+    boxSizing: "border-box",
+    background: "linear-gradient(145deg, rgba(69,26,3,0.96), rgba(9,9,9,0.98))",
+    border: "2px solid #facc15",
+    borderRadius: 24,
+    padding: 18,
+    boxShadow: "0 0 28px rgba(250,204,21,0.22)",
+  },
+  duplicateReviewHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  duplicateReviewTitle: {
+    margin: 0,
+    color: "#facc15",
+    fontSize: 24,
+  },
+  duplicateReviewCounter: {
+    minWidth: 48,
+    height: 48,
+    borderRadius: "50%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#facc15",
+    color: "#111",
+    fontSize: 22,
+    fontWeight: 900,
+  },
+  duplicateReviewList: {
+    display: "grid",
+    gap: 10,
+    marginTop: 14,
+  },
+  duplicateReviewItem: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) auto",
+    gap: 12,
+    alignItems: "center",
+    padding: 14,
+    borderRadius: 16,
+    border: "1px solid rgba(250, 204, 21, 0.45)",
+    background: "#090909",
+  },
+  duplicateReviewInfo: {
+    display: "grid",
+    gap: 4,
+    color: "#fef3c7",
+    fontSize: 13,
+    overflowWrap: "anywhere",
+  },
+  duplicateText: {
+    color: "#facc15",
+    fontWeight: 900,
+  },
+  columnErrorText: {
+    color: "#fb923c",
+    fontWeight: 900,
+  },
+  revisionOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 80,
+    background: "rgba(0,0,0,0.78)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+  },
+  revisionModal: {
+    width: "min(760px, 96vw)",
+    maxHeight: "92vh",
+    overflowY: "auto",
+    background: "linear-gradient(145deg, rgba(20,20,20,0.99), rgba(5,5,5,0.99))",
+    border: "2px solid #facc15",
+    borderRadius: 24,
+    padding: 20,
+    boxShadow: "0 0 42px rgba(250,204,21,0.35)",
+  },
+  revisionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 14,
+  },
+  revisionTitle: {
+    margin: 0,
+    color: "#facc15",
+    fontSize: 26,
+  },
+  revisionWarning: {
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 14,
+    background: "rgba(250,204,21,0.12)",
+    border: "1px solid rgba(250,204,21,0.5)",
+    color: "#facc15",
+    fontWeight: 900,
+  },
+  revisionGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+    gap: 8,
+    marginTop: 16,
+  },
+  revisionCell: {
+    minHeight: 84,
+    border: "1px solid #334155",
+    borderRadius: 14,
+    padding: 7,
+    display: "grid",
+    alignItems: "center",
+    justifyItems: "center",
+    gap: 4,
+  },
+  revisionCellLabel: {
+    color: "#fed7aa",
+    fontSize: 11,
+    fontWeight: 800,
+  },
+  revisionInput: {
+    width: "100%",
+    maxWidth: 72,
+    border: "1px solid #dc2626",
+    borderRadius: 10,
+    background: "#050505",
+    color: "#facc15",
+    fontSize: 22,
+    fontWeight: 900,
+    textAlign: "center",
+    padding: "8px 4px",
+  },
+  revisionDuplicateTag: {
+    color: "#111",
+    background: "#facc15",
+    borderRadius: 999,
+    padding: "3px 7px",
+    fontSize: 10,
+    fontWeight: 900,
+  },
+  revisionActions: {
+    display: "flex",
+    justifyContent: "flex-end",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 18,
   },
   winnerCard: {
     background: "#090909",

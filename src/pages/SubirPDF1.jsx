@@ -39,8 +39,6 @@ export default function SubirPDF() {
   const [tablas, setTablas] = useState([]);
   const [todasLasCeldas, setTodasLasCeldas] = useState([]);
   const [matricesOCR, setMatricesOCR] = useState([]);
-  const [duplicadosBD, setDuplicadosBD] = useState({});
-  const [duplicadosEstimadosBD, setDuplicadosEstimadosBD] = useState([]);
 
   const [procesando, setProcesando] = useState(false);
   const [guardandoBD, setGuardandoBD] = useState(false);
@@ -57,8 +55,6 @@ export default function SubirPDF() {
     setTablas([]);
     setTodasLasCeldas([]);
     setMatricesOCR([]);
-    setDuplicadosBD({});
-    setDuplicadosEstimadosBD([]);
     setMensaje("");
     setError("");
     setFileInputKey((prev) => prev + 1);
@@ -69,7 +65,6 @@ export default function SubirPDF() {
     setTablas([]);
     setTodasLasCeldas([]);
     setMatricesOCR([]);
-    setDuplicadosBD({});
   };
 
   const generarPreview = async (pdfFile) => {
@@ -134,31 +129,14 @@ export default function SubirPDF() {
         codigoInicial: codigoBase,
       }));
 
-      const totalTablasEstimadas = preview.length * 6;
-      const codigosEstimados = Array.from(
-        { length: totalTablasEstimadas },
-        (_, index) => codigoBase + index
-      );
-      const duplicadosEstimadosArchivo = await consultarDuplicadosEnBD(codigosEstimados);
-
       const nuevoArchivo = {
         loteId,
         file: fileOriginal,
         nombre_archivo: archivoNombre,
         codigoInicial: codigoBase,
         total_paginas: preview.length,
-        total_tablas_estimadas: totalTablasEstimadas,
-        duplicados_estimados: duplicadosEstimadosArchivo,
+        total_tablas_estimadas: preview.length * 6,
       };
-
-      setDuplicadosEstimadosBD((prev) => [
-        ...prev,
-        ...duplicadosEstimadosArchivo.map((item) => ({
-          ...item,
-          loteId,
-          archivoNombre,
-        })),
-      ]);
 
       setArchivosEnLote((prev) => [...prev, nuevoArchivo]);
       setPages((prev) => {
@@ -174,12 +152,8 @@ export default function SubirPDF() {
       setFile(null);
       setCodigoInicial("");
       setFileInputKey((prev) => prev + 1);
-      const avisoDuplicados = duplicadosEstimadosArchivo.length
-        ? ` ATENCIÓN: hay ${duplicadosEstimadosArchivo.length} tabla(s) estimadas que ya existen en BD. Se marcarán para revisión antes de guardar.`
-        : "";
-
       setMensaje(
-        `Archivo agregado al lote: ${archivoNombre}. Total acumulado: ${archivosEnLote.length + 1}. Selecciona otro PDF si deseas; NO se borró el anterior.${avisoDuplicados}`
+        `Archivo agregado al lote: ${archivoNombre}. Total acumulado: ${archivosEnLote.length + 1}. Selecciona otro PDF si deseas; NO se borró el anterior.`
       );
     } catch (err) {
       console.error(err);
@@ -202,7 +176,6 @@ export default function SubirPDF() {
 
     setArchivosEnLote((prev) => prev.filter((item) => item.loteId !== loteId));
     setPages((prev) => prev.filter((page) => page.loteId !== loteId));
-    setDuplicadosEstimadosBD((prev) => prev.filter((item) => item.loteId !== loteId));
     limpiarProcesamientoDelLote();
     setMensaje(`Archivo eliminado del lote: ${archivo.nombre_archivo}.`);
     setError("");
@@ -533,21 +506,8 @@ export default function SubirPDF() {
 
       await worker.terminate();
 
-      const duplicadosGuardados = await consultarDuplicadosEnBD(
-        matrices.map((tabla) => tabla.codigo_tabla)
-      );
-      const mapaDuplicadosGuardados = agruparDuplicadosBDPorNumero(duplicadosGuardados);
-
-      setDuplicadosBD(mapaDuplicadosGuardados);
       setMatricesOCR(matrices);
-
-      const avisoBD = duplicadosGuardados.length
-        ? ` También hay ${duplicadosGuardados.length} tabla(s) que ya existen guardadas en BD.`
-        : "";
-
-      setMensaje(
-        `OCR completado. Solo se mostrarán las tablas con celdas vacías, inválidas, números repetidos o ya guardadas en BD.${avisoBD}`
-      );
+      setMensaje("OCR completado. Revisa los códigos y corrige los signos ?.");
     } catch (err) {
       console.error(err);
       setError(err.message || "Error leyendo OCR.");
@@ -618,43 +578,7 @@ export default function SubirPDF() {
     return errores;
   };
 
-  const obtenerNumerosRepetidosMatriz = (matriz) => {
-    const mapa = new Map();
-
-    matriz.forEach((fila, filaIndex) => {
-      fila.forEach((valor, colIndex) => {
-        if (valor === "FREE" || valor === null || valor === "" || valor === undefined) return;
-
-        const numero = Number(valor);
-
-        if (!Number.isInteger(numero) || numero < 1 || numero > 75) return;
-
-        if (!mapa.has(numero)) {
-          mapa.set(numero, []);
-        }
-
-        mapa.get(numero).push({ fila: filaIndex, columna: colIndex });
-      });
-    });
-
-    return Array.from(mapa.entries())
-      .filter(([, posiciones]) => posiciones.length > 1)
-      .map(([numero, posiciones]) => ({ numero, posiciones }));
-  };
-
-  const formatearNumerosRepetidos = (duplicados) => {
-    return duplicados
-      .map((item) => {
-        const posiciones = item.posiciones
-          .map((pos) => `F${pos.fila + 1} C${pos.columna + 1}`)
-          .join(", ");
-
-        return `${item.numero} (${posiciones})`;
-      })
-      .join(" • ");
-  };
-
-  const obtenerErroresRevisionTabla = (tabla, mapaDuplicadosBD = duplicadosBD) => {
+  const obtenerErroresRevisionTabla = (tabla) => {
     const errores = [];
 
     if (!tabla.codigo_tabla || String(tabla.codigo_tabla).trim() === "") {
@@ -665,22 +589,6 @@ export default function SubirPDF() {
 
     if (erroresMatriz.length > 0) {
       errores.push(`celdas por revisar: ${erroresMatriz.join(", ")}`);
-    }
-
-    const duplicados = obtenerNumerosRepetidosMatriz(tabla.matriz);
-
-    if (duplicados.length > 0) {
-      errores.push(`números repetidos: ${formatearNumerosRepetidos(duplicados)}`);
-    }
-
-    const duplicadosGuardados = obtenerDuplicadosBDDeTabla(tabla, mapaDuplicadosBD);
-
-    if (duplicadosGuardados.length > 0) {
-      errores.push(
-        `ya existe guardada en BD: ${duplicadosGuardados
-          .map(describirDuplicadoBD)
-          .join(" • ")}`
-      );
     }
 
     return errores;
@@ -709,87 +617,6 @@ export default function SubirPDF() {
       .replace(/[\u0300-\u036f]/g, "")
       .replace(/\s+/g, "_")
       .replace(/[^a-zA-Z0-9._-]/g, "");
-
-  const normalizarCodigosNumericos = (codigos) => {
-    const numeros = codigos
-      .map((codigo) => Number(String(codigo ?? "").trim()))
-      .filter((numero) => Number.isInteger(numero));
-
-    return Array.from(new Set(numeros));
-  };
-
-  const consultarDuplicadosEnBD = async (codigos) => {
-    const codigosNumericos = normalizarCodigosNumericos(codigos);
-
-    if (!codigosNumericos.length) return [];
-
-    await obtenerUsuarioActual();
-
-    const resultados = [];
-    const tamanoBloque = 400;
-
-    for (let i = 0; i < codigosNumericos.length; i += tamanoBloque) {
-      const bloque = codigosNumericos.slice(i, i + tamanoBloque);
-
-      const { data, error: consultaError } = await supabase
-        .from("ringo_tablas")
-        .select(`
-          id,
-          numero_tabla,
-          codigo_tabla,
-          activo,
-          archivo_id,
-          ringo_archivos (
-            nombre_archivo,
-            nombre_juego,
-            fecha_juego,
-            estado,
-            activo
-          )
-        `)
-        .eq("activo", true)
-        .in("numero_tabla", bloque);
-
-      if (consultaError) throw consultaError;
-
-      resultados.push(...(data || []));
-    }
-
-    return resultados;
-  };
-
-  const agruparDuplicadosBDPorNumero = (registros) => {
-    return registros.reduce((acc, item) => {
-      const numero = Number(item.numero_tabla);
-
-      if (!Number.isInteger(numero)) return acc;
-
-      const key = String(numero);
-
-      if (!acc[key]) acc[key] = [];
-
-      acc[key].push(item);
-
-      return acc;
-    }, {});
-  };
-
-  const describirDuplicadoBD = (item) => {
-    const archivo = item.ringo_archivos || {};
-    const juego = archivo.nombre_juego || "sin juego";
-    const fecha = archivo.fecha_juego || "sin fecha";
-    const nombreArchivo = archivo.nombre_archivo || "sin archivo";
-
-    return `${juego} | ${fecha} | ${nombreArchivo}`;
-  };
-
-  const obtenerDuplicadosBDDeTabla = (tabla, mapa = duplicadosBD) => {
-    const numero = Number(String(tabla.codigo_tabla || "").trim());
-
-    if (!Number.isInteger(numero)) return [];
-
-    return mapa[String(numero)] || [];
-  };
 
   const crearArchivoEnBD = async ({ archivoLote, user, nombreLimpio, totalTablas }) => {
     const cleanName = limpiarNombreArchivo(archivoLote.nombre_archivo);
@@ -852,26 +679,18 @@ export default function SubirPDF() {
         return;
       }
 
-      const duplicadosGuardadosRecientes = await consultarDuplicadosEnBD(
-        matricesOCR.map((tabla) => tabla.codigo_tabla)
-      );
-      const mapaDuplicadosGuardadosRecientes = agruparDuplicadosBDPorNumero(
-        duplicadosGuardadosRecientes
-      );
-
-      setDuplicadosBD(mapaDuplicadosGuardadosRecientes);
-
       const errores = [];
 
       matricesOCR.forEach((tabla) => {
-        const erroresRevision = obtenerErroresRevisionTabla(
-          tabla,
-          mapaDuplicadosGuardadosRecientes
-        );
+        const faltantes = validarMatriz(tabla.matriz);
 
-        if (erroresRevision.length > 0) {
+        if (!tabla.codigo_tabla || String(tabla.codigo_tabla).trim() === "") {
+          errores.push(`Tabla ${tabla.index + 1}: falta número real de tabla`);
+        }
+
+        if (faltantes.length > 0) {
           errores.push(
-            `Archivo ${tabla.archivoNombre || "sin archivo"} / Tabla ${tabla.index + 1} / Página ${tabla.pagina} Pos ${tabla.posicion}: ${erroresRevision.join(" • ")}`
+            `Archivo ${tabla.archivoNombre || "sin archivo"} / Tabla ${tabla.index + 1} / Página ${tabla.pagina} Pos ${tabla.posicion}: ${faltantes.join(", ")}`
           );
         }
       });
@@ -945,86 +764,57 @@ export default function SubirPDF() {
     }
   };
 
-  const renderMatrizEditable = (tabla) => {
-    const duplicados = obtenerNumerosRepetidosMatriz(tabla.matriz);
-    const numerosRepetidos = new Set(duplicados.map((item) => item.numero));
+  const renderMatrizEditable = (tabla) => (
+    <div style={styles.ocrGrid}>
+      {tabla.matriz.flatMap((fila, filaIndex) =>
+        fila.map((valor, colIndex) => {
+          const celdaImg = todasLasCeldas[tabla.index]?.celdas?.find(
+            (c) => c.fila === filaIndex && c.columna === colIndex
+          );
 
-    return (
-      <div style={styles.ocrGrid}>
-        {tabla.matriz.flatMap((fila, filaIndex) =>
-          fila.map((valor, colIndex) => {
-            const celdaImg = todasLasCeldas[tabla.index]?.celdas?.find(
-              (c) => c.fila === filaIndex && c.columna === colIndex
-            );
+          const isFree = valor === "FREE";
+          const isEmpty = valor === null;
 
-            const isFree = valor === "FREE";
-            const isEmpty = valor === null;
-            const numeroActual = Number(valor);
-            const isRepeated =
-              !isFree && Number.isInteger(numeroActual) && numerosRepetidos.has(numeroActual);
+          return (
+            <div key={`${filaIndex}-${colIndex}`} style={styles.compareCell}>
+              <div style={styles.cellImageBox}>
+                {celdaImg && (
+                  <img
+                    src={celdaImg.image}
+                    alt={`F${filaIndex + 1} C${colIndex + 1}`}
+                    style={styles.cellImage}
+                  />
+                )}
+              </div>
 
-            return (
               <div
-                key={`${filaIndex}-${colIndex}`}
                 style={{
-                  ...styles.compareCell,
-                  border: isRepeated ? "2px solid #facc15" : styles.compareCell.border,
+                  ...styles.inputBox,
+                  background: isFree ? "#14532d" : isEmpty ? "#7f1d1d" : "#020617",
                 }}
               >
-                <div style={styles.cellImageBox}>
-                  {celdaImg && (
-                    <img
-                      src={celdaImg.image}
-                      alt={`F${filaIndex + 1} C${colIndex + 1}`}
-                      style={styles.cellImage}
-                    />
-                  )}
-                </div>
-
-                <div
-                  style={{
-                    ...styles.inputBox,
-                    background: isFree
-                      ? "#14532d"
-                      : isEmpty
-                        ? "#7f1d1d"
-                        : isRepeated
-                          ? "#713f12"
-                          : "#020617",
-                    border: isRepeated ? "2px solid #facc15" : styles.inputBox.border,
-                  }}
-                >
-                  {isFree ? (
-                    <span style={styles.freeText}>FREE</span>
-                  ) : (
-                    <input
-                      value={valor ?? ""}
-                      placeholder="?"
-                      onChange={(e) =>
-                        actualizarMatrizTodas(tabla.index, filaIndex, colIndex, e.target.value)
-                      }
-                      style={styles.ocrInput}
-                    />
-                  )}
-                </div>
-
-                {isRepeated && <div style={styles.duplicateTag}>REPETIDO</div>}
+                {isFree ? (
+                  <span style={styles.freeText}>FREE</span>
+                ) : (
+                  <input
+                    value={valor ?? ""}
+                    placeholder="?"
+                    onChange={(e) =>
+                      actualizarMatrizTodas(tabla.index, filaIndex, colIndex, e.target.value)
+                    }
+                    style={styles.ocrInput}
+                  />
+                )}
               </div>
-            );
-          })
-        )}
-      </div>
-    );
-  };
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
 
   const tablasQueNecesitanRevision = matricesOCR.filter(necesitaRevisionTabla);
   const tablasCorrectasOCR = Math.max(matricesOCR.length - tablasQueNecesitanRevision.length, 0);
-  const tablasConNumerosRepetidos = matricesOCR.filter(
-    (tabla) => obtenerNumerosRepetidosMatriz(tabla.matriz).length > 0
-  ).length;
-  const tablasYaGuardadasBD = matricesOCR.filter(
-    (tabla) => obtenerDuplicadosBDDeTabla(tabla).length > 0
-  ).length;
 
   return (
     <div style={styles.page}>
@@ -1035,9 +825,9 @@ export default function SubirPDF() {
           </Link>
 
           <div>
-            <h1 style={styles.title}>RINGO - Subir tablas MULTI PDF V6</h1>
+            <h1 style={styles.title}>RINGO - Subir tablas MULTI PDF V4</h1>
             <p style={styles.text}>
-              MODO MULTI PDF V6: puedes acumular varios PDFs. Después del OCR solo se muestran las tablas que necesitan revisión: vacías, inválidas, con números repetidos o ya guardadas en BD.
+              MODO MULTI PDF V4: puedes acumular varios PDFs. Después del OCR solo se muestran las tablas que necesitan revisión.
             </p>
           </div>
         </div>
@@ -1122,7 +912,7 @@ export default function SubirPDF() {
         </div>
 
         <div style={styles.debugBox}>
-          <strong>Diagnóstico MULTI PDF V6</strong>
+          <strong>Diagnóstico MULTI PDF V4</strong>
           <span>Archivo seleccionado: {file?.name || "ninguno"}</span>
           <span>Archivos acumulados en lote: {archivosEnLote.length}</span>
           <span>Páginas acumuladas: {pages.length}</span>
@@ -1145,9 +935,6 @@ export default function SubirPDF() {
                     <strong>{index + 1}. {archivo.nombre_archivo}</strong>
                     <div style={styles.loteMeta}>
                       Código inicial: {archivo.codigoInicial} • Páginas: {archivo.total_paginas} • Tablas estimadas: {archivo.total_tablas_estimadas}
-                      {archivo.duplicados_estimados?.length > 0 && (
-                        <> • Ya existen en BD: {archivo.duplicados_estimados.length}</>
-                      )}
                     </div>
                   </div>
 
@@ -1160,25 +947,6 @@ export default function SubirPDF() {
                   </button>
                 </div>
               ))}
-            </div>
-          </div>
-        )}
-
-        {duplicadosEstimadosBD.length > 0 && (
-          <div style={styles.bdDuplicateBox}>
-            <strong>Posibles duplicados ya guardados en BD</strong>
-            <span>Detectados por el rango estimado del código inicial antes del OCR.</span>
-            <div style={styles.bdDuplicateList}>
-              {duplicadosEstimadosBD.slice(0, 30).map((item, index) => (
-                <div key={`${item.loteId}-${item.id}-${index}`} style={styles.bdDuplicateItem}>
-                  Tabla {item.numero_tabla} • {item.archivoNombre || "PDF actual"} • {describirDuplicadoBD(item)}
-                </div>
-              ))}
-              {duplicadosEstimadosBD.length > 30 && (
-                <div style={styles.bdDuplicateItem}>
-                  ...y {duplicadosEstimadosBD.length - 30} duplicado(s) más.
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -1240,13 +1008,11 @@ export default function SubirPDF() {
             <span>Total procesadas: {matricesOCR.length}</span>
             <span>Correctas ocultas: {tablasCorrectasOCR}</span>
             <span>Necesitan revisión: {tablasQueNecesitanRevision.length}</span>
-            <span>Con números repetidos: {tablasConNumerosRepetidos}</span>
-            <span>Ya guardadas en BD: {tablasYaGuardadasBD}</span>
           </div>
 
           {tablasQueNecesitanRevision.length === 0 && (
             <div style={styles.success}>
-              No hay tablas con celdas vacías, inválidas, números repetidos ni duplicados ya guardados en BD. Puedes presionar “Guardar en BD”.
+              No hay tablas con celdas vacías o inválidas. Puedes presionar “Guardar en BD”.
             </div>
           )}
 
@@ -1498,33 +1264,6 @@ const styles = {
     border: "1px solid #dc2626",
   },
 
-  bdDuplicateBox: {
-    marginTop: 18,
-    background: "#431407",
-    border: "1px solid #fb923c",
-    borderRadius: 16,
-    padding: 14,
-    color: "#fed7aa",
-    display: "grid",
-    gap: 8,
-    fontWeight: 800,
-  },
-
-  bdDuplicateList: {
-    display: "grid",
-    gap: 6,
-    marginTop: 4,
-  },
-
-  bdDuplicateItem: {
-    background: "#090909",
-    border: "1px solid #7c2d12",
-    borderRadius: 10,
-    padding: "8px 10px",
-    color: "#ffedd5",
-    fontSize: 13,
-  },
-
   revisionSummary: {
     display: "flex",
     flexWrap: "wrap",
@@ -1687,17 +1426,6 @@ const styles = {
     fontSize: 22,
     fontWeight: "bold",
     outline: "none",
-  },
-
-  duplicateTag: {
-    marginTop: 6,
-    padding: "4px 6px",
-    borderRadius: 8,
-    background: "#facc15",
-    color: "#111827",
-    fontSize: 10,
-    fontWeight: 900,
-    textAlign: "center",
   },
 
   freeText: {
