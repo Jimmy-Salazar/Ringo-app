@@ -546,7 +546,7 @@ export default function SubirPDF() {
         : "";
 
       setMensaje(
-        `OCR completado. Solo se mostrarán las tablas con celdas vacías, inválidas, números repetidos o ya guardadas en BD.${avisoBD}`
+        `OCR completado. Solo se mostrarán las tablas con celdas vacías, inválidas, números repetidos, números fuera de columna o ya guardadas en BD.${avisoBD}`
       );
     } catch (err) {
       console.error(err);
@@ -654,6 +654,54 @@ export default function SubirPDF() {
       .join(" • ");
   };
 
+  const rangosColumnasBingo = [
+    { letra: "B", min: 1, max: 15 },
+    { letra: "I", min: 16, max: 30 },
+    { letra: "N", min: 31, max: 45 },
+    { letra: "G", min: 46, max: 60 },
+    { letra: "O", min: 61, max: 75 },
+  ];
+
+  const obtenerErroresColumnasMatriz = (matriz) => {
+    const errores = [];
+
+    matriz.forEach((fila, filaIndex) => {
+      fila.forEach((valor, colIndex) => {
+        if (valor === "FREE" || valor === null || valor === "" || valor === undefined) return;
+
+        const numero = Number(valor);
+
+        if (!Number.isInteger(numero) || numero < 1 || numero > 75) return;
+
+        const rango = rangosColumnasBingo[colIndex];
+
+        if (!rango) return;
+
+        if (numero < rango.min || numero > rango.max) {
+          errores.push({
+            numero,
+            fila: filaIndex,
+            columna: colIndex,
+            letra: rango.letra,
+            min: rango.min,
+            max: rango.max,
+          });
+        }
+      });
+    });
+
+    return errores;
+  };
+
+  const formatearErroresColumnas = (erroresColumnas) => {
+    return erroresColumnas
+      .map(
+        (item) =>
+          `${item.numero} en columna ${item.letra} F${item.fila + 1} C${item.columna + 1} (debe ser ${item.min}-${item.max})`
+      )
+      .join(" • ");
+  };
+
   const obtenerErroresRevisionTabla = (tabla, mapaDuplicadosBD = duplicadosBD) => {
     const errores = [];
 
@@ -671,6 +719,12 @@ export default function SubirPDF() {
 
     if (duplicados.length > 0) {
       errores.push(`números repetidos: ${formatearNumerosRepetidos(duplicados)}`);
+    }
+
+    const erroresColumnas = obtenerErroresColumnasMatriz(tabla.matriz);
+
+    if (erroresColumnas.length > 0) {
+      errores.push(`números fuera de columna: ${formatearErroresColumnas(erroresColumnas)}`);
     }
 
     const duplicadosGuardados = obtenerDuplicadosBDDeTabla(tabla, mapaDuplicadosBD);
@@ -948,6 +1002,10 @@ export default function SubirPDF() {
   const renderMatrizEditable = (tabla) => {
     const duplicados = obtenerNumerosRepetidosMatriz(tabla.matriz);
     const numerosRepetidos = new Set(duplicados.map((item) => item.numero));
+    const columnasIncorrectas = obtenerErroresColumnasMatriz(tabla.matriz);
+    const posicionesColumnasIncorrectas = new Set(
+      columnasIncorrectas.map((item) => `${item.fila}-${item.columna}`)
+    );
 
     return (
       <div style={styles.ocrGrid}>
@@ -962,13 +1020,19 @@ export default function SubirPDF() {
             const numeroActual = Number(valor);
             const isRepeated =
               !isFree && Number.isInteger(numeroActual) && numerosRepetidos.has(numeroActual);
+            const isWrongColumn =
+              !isFree && posicionesColumnasIncorrectas.has(`${filaIndex}-${colIndex}`);
 
             return (
               <div
                 key={`${filaIndex}-${colIndex}`}
                 style={{
                   ...styles.compareCell,
-                  border: isRepeated ? "2px solid #facc15" : styles.compareCell.border,
+                  border: isWrongColumn
+                    ? "2px solid #fb923c"
+                    : isRepeated
+                      ? "2px solid #facc15"
+                      : styles.compareCell.border,
                 }}
               >
                 <div style={styles.cellImageBox}>
@@ -988,10 +1052,16 @@ export default function SubirPDF() {
                       ? "#14532d"
                       : isEmpty
                         ? "#7f1d1d"
-                        : isRepeated
-                          ? "#713f12"
-                          : "#020617",
-                    border: isRepeated ? "2px solid #facc15" : styles.inputBox.border,
+                        : isWrongColumn
+                          ? "#7c2d12"
+                          : isRepeated
+                            ? "#713f12"
+                            : "#020617",
+                    border: isWrongColumn
+                      ? "2px solid #fb923c"
+                      : isRepeated
+                        ? "2px solid #facc15"
+                        : styles.inputBox.border,
                   }}
                 >
                   {isFree ? (
@@ -1009,6 +1079,7 @@ export default function SubirPDF() {
                 </div>
 
                 {isRepeated && <div style={styles.duplicateTag}>REPETIDO</div>}
+                {isWrongColumn && <div style={styles.columnTag}>COLUMNA</div>}
               </div>
             );
           })
@@ -1021,6 +1092,9 @@ export default function SubirPDF() {
   const tablasCorrectasOCR = Math.max(matricesOCR.length - tablasQueNecesitanRevision.length, 0);
   const tablasConNumerosRepetidos = matricesOCR.filter(
     (tabla) => obtenerNumerosRepetidosMatriz(tabla.matriz).length > 0
+  ).length;
+  const tablasConColumnasIncorrectas = matricesOCR.filter(
+    (tabla) => obtenerErroresColumnasMatriz(tabla.matriz).length > 0
   ).length;
   const tablasYaGuardadasBD = matricesOCR.filter(
     (tabla) => obtenerDuplicadosBDDeTabla(tabla).length > 0
@@ -1037,7 +1111,7 @@ export default function SubirPDF() {
           <div>
             <h1 style={styles.title}>RINGO - Subir tablas MULTI PDF V6</h1>
             <p style={styles.text}>
-              MODO MULTI PDF V6: puedes acumular varios PDFs. Después del OCR solo se muestran las tablas que necesitan revisión: vacías, inválidas, con números repetidos o ya guardadas en BD.
+              MODO MULTI PDF V6: puedes acumular varios PDFs. Después del OCR solo se muestran las tablas que necesitan revisión: vacías, inválidas, con números repetidos, con números fuera de columna o ya guardadas en BD.
             </p>
           </div>
         </div>
@@ -1241,12 +1315,13 @@ export default function SubirPDF() {
             <span>Correctas ocultas: {tablasCorrectasOCR}</span>
             <span>Necesitan revisión: {tablasQueNecesitanRevision.length}</span>
             <span>Con números repetidos: {tablasConNumerosRepetidos}</span>
+            <span>Con columnas incorrectas: {tablasConColumnasIncorrectas}</span>
             <span>Ya guardadas en BD: {tablasYaGuardadasBD}</span>
           </div>
 
           {tablasQueNecesitanRevision.length === 0 && (
             <div style={styles.success}>
-              No hay tablas con celdas vacías, inválidas, números repetidos ni duplicados ya guardados en BD. Puedes presionar “Guardar en BD”.
+              No hay tablas con celdas vacías, inválidas, números repetidos, números fuera de columna ni duplicados ya guardados en BD. Puedes presionar “Guardar en BD”.
             </div>
           )}
 
@@ -1694,6 +1769,17 @@ const styles = {
     padding: "4px 6px",
     borderRadius: 8,
     background: "#facc15",
+    color: "#111827",
+    fontSize: 10,
+    fontWeight: 900,
+    textAlign: "center",
+  },
+
+  columnTag: {
+    marginTop: 6,
+    padding: "4px 6px",
+    borderRadius: 8,
+    background: "#fb923c",
     color: "#111827",
     fontSize: 10,
     fontWeight: 900,
